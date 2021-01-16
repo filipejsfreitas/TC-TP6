@@ -98,28 +98,32 @@ def handshake(socket: socket.socket):
   # Create a DHPublicKey object from the server's DH public key bytes
   g_y: dh.DHPublicKey = load_pem_public_key(g_y_as_bytes)
 
-  # Perform the key exchange to derive the shared key
-  shared_key = g_x.exchange(g_y)
+  # Perform the key exchange to derive the shared secret
+  shared_secret = g_x.exchange(g_y)
 
   # Perform key derivation from the shared key
+  # This step isn't technically required by the protocol,
+  # but it is recommended by cryptography's documentation,
+  # so, we decided to implement it for completeness
   derived_key = HKDF(
     algorithm=hashes.SHA256(),
     length=AES_KEY_LEN,
     salt=salt,
     info=b''
-  ).derive(shared_key)
+  ).derive(shared_secret)
 
   # Create a x509.Certificate object from the server's certificate bytes
   server_certificate = load_pem_x509_certificate(server_certificate_as_bytes)
-  # TODO: Maybe verify if the server's certificate was issued by the provided CA?
+  
+  # Verify the server's certificate against the CA certificate
+  if not validate_certificate(server_certificate):
+    return None
 
   # Decrypt the server's signature of g^y and g^x and verify it
   signature_gy_gx = decrypt(derived_key, encrypted_signature_gy_gx)
 
   # Verify the signature of the concatenation of g^y, g^x is valid
   if not verify(server_certificate.public_key(), g_y_as_bytes + g_x_as_bytes, signature_gy_gx):
-    print('Signature verification failed!')
-    print('Signature verification returned: ' + verify(server_certificate.public_key(), g_y_as_bytes + g_x_as_bytes, signature_gy_gx))
     return None
 
   # Load this client's private/public key pair and certificate

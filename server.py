@@ -122,16 +122,19 @@ class Client(threading.Thread):
     # Build DHPublicKey object from the client's public key bytes
     g_x: dh.DHPublicKey = load_pem_public_key(g_x_as_bytes)
 
-    # Perform the key exchange to derive the shared key
-    shared_key = g_y.exchange(g_x)
+    # Perform the key exchange to derive the shared secret
+    shared_secret = g_y.exchange(g_x)
 
-    # Perform key derivation from the shared key
+    # Perform key derivation from the shared secret
+    # This step isn't technically required by the protocol,
+    # but it is recommended by cryptography's documentation,
+    # so, we decided to implement it for completeness
     self.key = HKDF(
       algorithm=hashes.SHA256(),
       length=AES_KEY_LEN,
       salt=salt,
       info=b''
-    ).derive(shared_key)
+    ).derive(shared_secret)
 
     # Send to the client the following, separated by \r\n\r\n:
     # 1) Salt for key derivation
@@ -151,7 +154,10 @@ class Client(threading.Thread):
     # Build a x509.Certificate object from the client's certificate
     self.client_certificate = load_pem_x509_certificate(client_certificate_as_bytes)
     self.client_public_key = self.client_certificate.public_key()
-    # TODO: Maybe verify if the client's certificate was issued by the provided CA?
+    
+    # Verify the client's certificate against the CA's certificate
+    if not self.validate_certificate(debug):
+      return False
 
     # Verify the signature of the concatenation
     if not self.verify(self.client_public_key, g_x_as_bytes + g_y_as_bytes, signature_gx_gy):
@@ -190,6 +196,15 @@ class Client(threading.Thread):
 
   # Message is bytes.
   def sign(self, message):
+    # Given a message, this function signs the given message
+    # with this server's private key and returns that signature.
+
+    # This function is crucial for the STS protocol as it provides the
+    # means necessary for the remote client to verify that this server
+    # is indeed who it says it is, that there is no man-in-the-middle
+    # pretending to be this server, and that the given message was
+    # indeed sent by this server.
+
     signature = self.private_key.sign(
       message,
       PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH),
@@ -200,6 +215,17 @@ class Client(threading.Thread):
 
   # m and sig are bytes.
   def verify(self, public_key, m, sig):
+    # Given a public key, a message and a signature,
+    # this function verifies if the given signature matches
+    # the signature obtained by signing the message m with the
+    # given public key, and returns True if the signatures match
+
+    # This function is crucial for the STS protocol as it verifies
+    # that the remote client is indeed in possession of the private
+    # key corresponding to the given public key, and in doing so,
+    # verifies that the client is indeed who he says he is (assuming 
+    # the certificate was issued by a valid CA).
+
     try:
       public_key.verify(
         sig,
@@ -214,6 +240,12 @@ class Client(threading.Thread):
 
   # Receives the certificate object (not the bytes).
   def validate_certificate(self, debug = False):
+    # This function verifies that the client's certificate isn't malformed
+    # and that it was properly issued and signed by the Certificate Authority (CA)
+    # It does so by comparing the Issuer's attributes present on the client certificate
+    # with the subject attributes present on the CA's certificate, as well as by
+    # verifying the client certificate's signature using the CA's public key
+
     certificate = self.client_certificate
 
     ca_public_key = None
@@ -222,41 +254,56 @@ class Client(threading.Thread):
       ca_cert = load_pem_x509_certificate(cert_file.read())
       ca_public_key = ca_cert.public_key()
 
+    # Make sure the country specified in the CA's certificate is the same as
+    # the issuer's country specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.COUNTRY_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.COUNTRY_NAME)[0].value:
           debug and print("Mismatched field: %s" % NameOID.COUNTRY_NAME)
           return False
 
+    # Make sure the "state or province name" specified in the CA's certificate is the same as
+    # the issuer's "state or province name" specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.STATE_OR_PROVINCE_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.STATE_OR_PROVINCE_NAME)[0].value:
           debug and print("Mismatched field: %s" % NameOID.STATE_OR_PROVINCE_NAME)
           return False
 
+    # Make sure the "locality name" specified in the CA's certificate is the same as
+    # the issuer's "locality name" specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.LOCALITY_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.LOCALITY_NAME)[0].value:
           debug and print("Mismatched field: %s" % NameOID.LOCALITY_NAME)
           return False
 
+    # Make sure the "organization name" specified in the CA's certificate is the same as
+    # the issuer's "organization name" specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)[0].value:
           debug and print("Mismatched field: %s" % NameOID.ORGANIZATION_NAME)
           return False
 
+    # Make sure the "organizational unit name" specified in the CA's certificate is the same as
+    # the issuer's "organizational unit name" specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)[0].value:
           debug and print("Mismatched field: %s" %
               NameOID.ORGANIZATIONAL_UNIT_NAME)
           return False
 
+    # Make sure the "common name" specified in the CA's certificate is the same as
+    # the issuer's "common name" specified in the client's certificate
     if ca_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value != \
         certificate.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value:
           debug and print("Mismatched field: %s" % NameOID.COMMON_NAME)
           return False
 
+    # Make sure the "common name" attribute present on the client's certificate matches
+    # the string "TC Client"
     if certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value != "TC Client":
       debug and print("Wrong field (server cert): %s" % NameOID.COMMON_NAME)
       return False
 
+    # Make sure the client certificate's signature was issued by the CA
     ca_public_key.verify(
       certificate.signature,
       certificate.tbs_certificate_bytes,
