@@ -79,8 +79,35 @@ def decrypt(k, c):
   pt = unpadder.update(pt) + unpadder.finalize()
   return pt
 
-def handshake(socket):
-  return "some random key" # change this...
+def handshake(socket: socket.socket):
+  # return "some random key" # change this...
+  
+  # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
+  
+  # Generate a private key for this session
+  x = parameters.generate_private_key()
+  x_as_bytes = x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
+  # Send the public parameter of our DH key to the server
+  socket.sendall(x_as_bytes)
+
+  # Wait for the public parameter of the server's DH key as well as the salt to be used for key derivation
+  b = socket.recv(SOCKET_READ_BLOCK_LEN)
+  salt = b[-AES_KEY_LEN:] # Last AES_KEY_LEN bytes are the salt
+  y_as_bytes = b[:-AES_KEY_LEN] # Everything else is the server's public DH key
+
+  y: dh.DHPublicKey = load_pem_public_key(y_as_bytes) 
+
+  # Perform the key exchange to derive the shared key
+  shared_key = x.exchange(y)
+
+  # Perform key derivation from the shared key
+  return HKDF(
+    algorithm=hashes.SHA256(),
+    length=AES_KEY_LEN,
+    salt=salt,
+    info=b''
+  ).derive(shared_key)
 
 def process(socket):
   print("Going to do handshake... ", end='')

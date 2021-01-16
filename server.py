@@ -46,7 +46,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 class Client(threading.Thread):
-  def __init__(self, socket, address, id, name):
+  def __init__(self, socket: socket.socket, address, id, name):
       threading.Thread.__init__(self)
       self.socket = socket
       self.address = address
@@ -55,12 +55,6 @@ class Client(threading.Thread):
 
       # Don't wait for child threads (client connections) to finish.
       self.daemon = True
-
-      self.dh_y = None
-      self.dh_g_y = None
-      self.dh_g_y_as_bytes = None
-      self.dh_g_x_as_bytes = None
-      self.dh_g_x = None
 
       # Symmetric (shared) key
       self.key = None
@@ -110,13 +104,41 @@ class Client(threading.Thread):
     return pt
 
   def handshake(self, debug = False):
-
     # You can print debug messages as:
     # debug and print("some debug message")
     # This way, they are easy to enable/disable, without needing to
     # comment/uncomment lines of code...
 
-    self.key = "some random key" # change this...
+    # self.key = "some random key" # change this...
+    # return True
+
+    # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
+    
+    # Generate a private key for this client
+    x = parameters.generate_private_key()
+    x_as_bytes = x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
+    # Generate a salt to be used for key derivation and send it to the client
+    salt = os.urandom(AES_KEY_LEN)
+
+    # Send the public parameter of our DH key to the client
+    self.socket.sendall(x_as_bytes + salt) # The last AES_KEY_LEN bytes of the message will be the salt
+
+    # Wait for the public parameter of the client's DH key
+    y_as_bytes = self.socket.recv(SOCKET_READ_BLOCK_LEN)
+    y: dh.DHPublicKey = load_pem_public_key(y_as_bytes)
+
+    # Perform the key exchange to derive the shared key
+    shared_key = x.exchange(y)
+
+    # Perform key derivation from the shared key
+    self.key = HKDF(
+      algorithm=hashes.SHA256(),
+      length=AES_KEY_LEN,
+      salt=salt,
+      info=b''
+    ).derive(shared_key)
+
     return True
 
   def run(self):
