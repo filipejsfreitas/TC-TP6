@@ -56,11 +56,11 @@ def connect():
 
 # Receives and returns bytes.
 def encrypt(k, m):
-  return m # delete this...
-
   padder = padding.PKCS7(PKCS7_BIT_LEN).padder()
   padded_data = padder.update(m) + padder.finalize()
+
   iv = os.urandom(AES_BLOCK_LEN)
+
   cipher = Cipher(algorithms.AES(k), modes.CBC(iv))
   encryptor = cipher.encryptor()
 
@@ -69,19 +69,19 @@ def encrypt(k, m):
 
 # Receives and returns bytes.
 def decrypt(k, c):
-  return c # delete this...
-
   iv, ct = c[:AES_BLOCK_LEN], c[AES_BLOCK_LEN:]
+  
   cipher = Cipher(algorithms.AES(k), modes.CBC(iv))
+
   decryptor = cipher.decryptor()
   pt = decryptor.update(ct) + decryptor.finalize()
+
   unpadder = padding.PKCS7(PKCS7_BIT_LEN).unpadder()
   pt = unpadder.update(pt) + unpadder.finalize()
+
   return pt
 
 def handshake(socket: socket.socket):
-  # return "some random key" # change this...
-  
   # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
   
   # Generate a private key for this session

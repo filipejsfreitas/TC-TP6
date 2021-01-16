@@ -80,38 +80,33 @@ class Client(threading.Thread):
 
   # Receives and returns bytes.
   def encrypt(self, m):
-    return m # delete this...
-
     padder = padding.PKCS7(PKCS7_BIT_LEN).padder()
     padded_data = padder.update(m) + padder.finalize()
+
     iv = os.urandom(AES_BLOCK_LEN)
+    
     cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv))
     encryptor = cipher.encryptor()
 
     ct = encryptor.update(padded_data) + encryptor.finalize()
-    return iv+ct
+
+    return iv + ct
 
   # Receives and returns bytes.
   def decrypt(self, c):
-    return c # delete this...
-
     iv, ct = c[:AES_BLOCK_LEN], c[AES_BLOCK_LEN:]
+
     cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv))
+
     decryptor = cipher.decryptor()
     pt = decryptor.update(ct) + decryptor.finalize()
+
     unpadder = padding.PKCS7(PKCS7_BIT_LEN).unpadder()
     pt = unpadder.update(pt) + unpadder.finalize()
+
     return pt
 
   def handshake(self, debug = False):
-    # You can print debug messages as:
-    # debug and print("some debug message")
-    # This way, they are easy to enable/disable, without needing to
-    # comment/uncomment lines of code...
-
-    # self.key = "some random key" # change this...
-    # return True
-
     # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
     
     # Generate a private key for this client
