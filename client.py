@@ -4,13 +4,14 @@ import socket
 import threading
 import sys, signal
 import os
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from cryptography.x509 import load_pem_x509_certificate
+from cryptography.x509 import load_pem_x509_certificate, Certificate
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.asymmetric.padding import PSS, MGF1, PKCS1v15
@@ -18,6 +19,8 @@ from cryptography.hazmat.primitives.asymmetric.padding import PSS, MGF1, PKCS1v1
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+from cryptography.exceptions import InvalidSignature
 
 AES_BLOCK_LEN = 16 # bytes
 AES_KEY_LEN = 32 # bytes
@@ -82,32 +85,62 @@ def decrypt(k, c):
   return pt
 
 def handshake(socket: socket.socket):
-  # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
-  
   # Generate a private key for this session
-  x = parameters.generate_private_key()
-  x_as_bytes = x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+  g_x = parameters.generate_private_key()
+  g_x_as_bytes = g_x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
 
   # Send the public parameter of our DH key to the server
-  socket.sendall(x_as_bytes)
+  socket.sendall(g_x_as_bytes)
 
   # Wait for the public parameter of the server's DH key as well as the salt to be used for key derivation
-  b = socket.recv(SOCKET_READ_BLOCK_LEN)
-  salt = b[-AES_KEY_LEN:] # Last AES_KEY_LEN bytes are the salt
-  y_as_bytes = b[:-AES_KEY_LEN] # Everything else is the server's public DH key
+  salt, g_y_as_bytes, encrypted_signature_gy_gx, server_certificate_as_bytes = socket.recv(SOCKET_READ_BLOCK_LEN).split(b'\r\n\r\n')
 
-  y: dh.DHPublicKey = load_pem_public_key(y_as_bytes) 
+  # Create a DHPublicKey object from the server's DH public key bytes
+  g_y: dh.DHPublicKey = load_pem_public_key(g_y_as_bytes)
 
   # Perform the key exchange to derive the shared key
-  shared_key = x.exchange(y)
+  shared_key = g_x.exchange(g_y)
 
   # Perform key derivation from the shared key
-  return HKDF(
+  derived_key = HKDF(
     algorithm=hashes.SHA256(),
     length=AES_KEY_LEN,
     salt=salt,
     info=b''
   ).derive(shared_key)
+
+  # Create a x509.Certificate object from the server's certificate bytes
+  server_certificate = load_pem_x509_certificate(server_certificate_as_bytes)
+  # TODO: Maybe verify if the server's certificate was issued by the provided CA?
+
+  # Decrypt the server's signature of g^y and g^x and verify it
+  signature_gy_gx = decrypt(derived_key, encrypted_signature_gy_gx)
+
+  # Verify the signature of the concatenation of g^y, g^x is valid
+  if not verify(server_certificate.public_key(), g_y_as_bytes + g_x_as_bytes, signature_gy_gx):
+    print('Signature verification failed!')
+    print('Signature verification returned: ' + verify(server_certificate.public_key(), g_y_as_bytes + g_x_as_bytes, signature_gy_gx))
+    return None
+
+  # Load this client's private/public key pair and certificate
+  private_key = None
+  with open(path("TC_Server.key.pem"), "rb") as key_file:
+    private_key = load_pem_private_key(key_file.read(), password=None)
+  
+  certificate_as_bytes = None
+  with open(path("TC_Server.cert.pem"), "rb") as cert_file:
+    certificate_as_bytes = cert_file.read()
+  
+  # Sign, with this client's private key, the concatenation of g^x and g^y, in this order
+  # and then encrypt the resulting signature with the derived shared secret
+  encrypted_signature_gx_gy = encrypt(derived_key, sign(private_key, g_x_as_bytes + g_y_as_bytes))
+
+  # Send to the server this client's encrypted signature of g^x and g^y, as well as this client's 
+  print(len(encrypted_signature_gx_gy), len(certificate_as_bytes))
+  socket.sendall(b'\r\n\r\n'.join([encrypted_signature_gx_gy, certificate_as_bytes]))
+
+  # Return the derived key to be used for this session
+  return derived_key
 
 def process(socket):
   print("Going to do handshake... ", end='')
@@ -142,13 +175,18 @@ def sign(private_key, message):
   return signature
 
 # Message and signature bytes.
-def verify(public_key, message, signature):
-  public_key.verify(
+def verify(public_key: RSAPublicKey, message, signature):
+  try:
+    public_key.verify(
       signature,
       message,
-      PSS(mgf=MGF1(hashes.SHA256()),
-                  salt_length=PSS.MAX_LENGTH),
-      hashes.SHA256())
+      PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH),
+      hashes.SHA256()
+    )
+    
+    return True
+  except InvalidSignature:
+    return False
 
 # Receives the certificate object (not the bytes).
 def validate_certificate(certificate, debug = False):

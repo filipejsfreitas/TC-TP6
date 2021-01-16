@@ -19,6 +19,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+from cryptography.exceptions import InvalidSignature
+
 # An useful function to open files in the same dir as script...
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 def path(fname):
@@ -107,24 +109,21 @@ class Client(threading.Thread):
     return pt
 
   def handshake(self, debug = False):
-    # Simple, Ephemeral Diffie-Hellman Key-exchange implementation
-    
     # Generate a private key for this client
-    x = parameters.generate_private_key()
-    x_as_bytes = x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+    g_y = parameters.generate_private_key()
+    g_y_as_bytes = g_y.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
 
-    # Generate a salt to be used for key derivation and send it to the client
+    # Generate a salt to be used for key derivation
     salt = os.urandom(AES_KEY_LEN)
 
-    # Send the public parameter of our DH key to the client
-    self.socket.sendall(x_as_bytes + salt) # The last AES_KEY_LEN bytes of the message will be the salt
-
     # Wait for the public parameter of the client's DH key
-    y_as_bytes = self.socket.recv(SOCKET_READ_BLOCK_LEN)
-    y: dh.DHPublicKey = load_pem_public_key(y_as_bytes)
+    g_x_as_bytes = self.socket.recv(SOCKET_READ_BLOCK_LEN)
+
+    # Build DHPublicKey object from the client's public key bytes
+    g_x: dh.DHPublicKey = load_pem_public_key(g_x_as_bytes)
 
     # Perform the key exchange to derive the shared key
-    shared_key = x.exchange(y)
+    shared_key = g_y.exchange(g_x)
 
     # Perform key derivation from the shared key
     self.key = HKDF(
@@ -134,6 +133,31 @@ class Client(threading.Thread):
       info=b''
     ).derive(shared_key)
 
+    # Send to the client the following, separated by \r\n\r\n:
+    # 1) Salt for key derivation
+    # 2) g^y
+    # 3) E_k(S_B(g^y, g^x)), onde k é a derived key (self.key) acima calculada e B é a chave privada assimétrica do servidor
+    # 4) Server certificate
+    self.socket.sendall(b'\r\n\r\n'.join([salt, g_y_as_bytes, self.encrypt(self.sign(g_y_as_bytes + g_x_as_bytes)), self.certificate_as_bytes]))
+
+    # Receive from the client the following, separated by \r\n\r\n:
+    # 1) E_k(S_A(g^x, g^y)), onde k é a derived key acima calculada e A é a chave privada assimétrica do cliente
+    # 2) Client certificate
+    encrypted_signature_gx_gy, client_certificate_as_bytes = self.socket.recv(SOCKET_READ_BLOCK_LEN).split(b'\r\n\r\n')
+
+    # Decrypt the signature of the concatenation of g^x, g^y
+    signature_gx_gy = self.decrypt(encrypted_signature_gx_gy)
+
+    # Build a x509.Certificate object from the client's certificate
+    self.client_certificate = load_pem_x509_certificate(client_certificate_as_bytes)
+    self.client_public_key = self.client_certificate.public_key()
+    # TODO: Maybe verify if the client's certificate was issued by the provided CA?
+
+    # Verify the signature of the concatenation
+    if not self.verify(self.client_public_key, g_x_as_bytes + g_y_as_bytes, signature_gx_gy):
+      return False
+
+    # Everything went well! Handshake succeded and connection is ready for communication.
     return True
 
   def run(self):
@@ -166,13 +190,27 @@ class Client(threading.Thread):
 
   # Message is bytes.
   def sign(self, message):
-    pass
-    # implement this
+    signature = self.private_key.sign(
+      message,
+      PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH),
+      hashes.SHA256()
+    )
+
+    return signature
 
   # m and sig are bytes.
   def verify(self, public_key, m, sig):
-    pass
-    # implement this
+    try:
+      public_key.verify(
+        sig,
+        m,
+        PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH),
+        hashes.SHA256()
+      )
+
+      return True
+    except InvalidSignature:
+      return False
 
   # Receives the certificate object (not the bytes).
   def validate_certificate(self, debug = False):
