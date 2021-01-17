@@ -110,6 +110,8 @@ class Client(threading.Thread):
 
   def handshake(self, debug = False):
     # Generate a private key for this client
+    # Generating a new key every time we handshake means
+    # we are using Ephemeral mode
     g_y = parameters.generate_private_key()
     g_y_as_bytes = g_y.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
 
@@ -244,7 +246,7 @@ class Client(threading.Thread):
     # and that it was properly issued and signed by the Certificate Authority (CA)
     # It does so by comparing the Issuer's attributes present on the client certificate
     # with the subject attributes present on the CA's certificate, as well as by
-    # verifying the client certificate's signature using the CA's public key
+    # verifying the client's certificate was signed using the CA's public key
 
     certificate = self.client_certificate
 
@@ -303,7 +305,7 @@ class Client(threading.Thread):
       debug and print("Wrong field (server cert): %s" % NameOID.COMMON_NAME)
       return False
 
-    # Make sure the client certificate's signature was issued by the CA
+    # Make sure the client's certificate was signed by the CA
     ca_public_key.verify(
       certificate.signature,
       certificate.tbs_certificate_bytes,

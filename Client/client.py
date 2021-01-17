@@ -86,13 +86,19 @@ def decrypt(k, c):
 
 def handshake(socket: socket.socket):
   # Generate a private key for this session
+  # Generating a new key every time we handshake means
+  # we are using ephemeral mode
   g_x = parameters.generate_private_key()
   g_x_as_bytes = g_x.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
 
   # Send the public parameter of our DH key to the server
   socket.sendall(g_x_as_bytes)
 
-  # Wait for the public parameter of the server's DH key as well as the salt to be used for key derivation
+  # Receive, from the server, the following, separated by \r\n\r\n:
+  # 1) The salt to be used for key derivation
+  # 2) g^y
+  # 3) The encrypted signature of (g^y, g^x)
+  # 4) The server's certificate
   salt, g_y_as_bytes, encrypted_signature_gy_gx, server_certificate_as_bytes = socket.recv(SOCKET_READ_BLOCK_LEN).split(b'\r\n\r\n')
 
   # Create a DHPublicKey object from the server's DH public key bytes
@@ -136,7 +142,7 @@ def handshake(socket: socket.socket):
     certificate_as_bytes = cert_file.read()
   
   # Sign, with this client's private key, the concatenation of g^x and g^y, in this order
-  # and then encrypt the resulting signature with the derived shared secret
+  # and then encrypt the resulting signature with the derived key
   encrypted_signature_gx_gy = encrypt(derived_key, sign(private_key, g_x_as_bytes + g_y_as_bytes))
 
   # Send to the server this client's encrypted signature of g^x and g^y, as well as this client's 
